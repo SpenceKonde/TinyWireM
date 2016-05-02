@@ -130,11 +130,7 @@ USI_TWI Wire = USI_TWI();
 
 #ifdef USE_SOFT_I2C
 
-#if (ARDUINO >= 100)
 #include <Arduino.h>
-#else
-#include <WProgram.h>
-#endif
 
 #include "SoftI2CMaster.h"
 
@@ -446,6 +442,7 @@ uint8_t SoftI2CMaster::readLast()
     return i2c_read( I2C_NAK );
 }
 
+SoftI2CMaster Wire = SoftI2CMaster();
 
 #endif
 
