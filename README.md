@@ -1,8 +1,8 @@
-TinyWireM
+SmartWire branch
 =========
 
-ATtiny (e.g. Adafruit Trinket, Gemma) I2C library, adapted from BroHogan's code on Arduino Playground: http://playground.arduino.cc/Code/USIi2c
+SmartWire branch contains an attempt to have one interchangible library to support I2C on chips with USI, full TWI, or soft-I2C only with one library. The goal would be for no code changes to be needed inside libraries in order to support I2C master functionality, because it's an unpleasant barrier to have to modify a library (which sounds scary - though it's not that hard, it's still a pain to have to do) 
 
-Minor changes for consistency with the Arduino 1.0 Wire library (e.g. uses write() instead of send()). Buffer size slightly increased for Adafruit_LEDBackpack use.
+I2C slave functionality is not supported - since you don't typically have libraries that depend on using Wire in slave mode, this is not a priority.
 
-On the Trinket boards, pin #0 is SDA (I2C data), pin #2 is SCK (I2C clock).
+This code is not expected to be usable in it's current state
