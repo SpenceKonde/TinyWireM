@@ -19,6 +19,439 @@
   Modified 2012 by Todd Krein (todd@krein.org) to implement repeated starts
 */
 
+#ifdef USE_USI_I2C
+
+extern "C" {
+  //#include "USI_TWI_Master.h"
+  //#include <USI_TWI_Master.h>
+  //#include <USI_TWI_Master\USI_TWI_Master.h>
+  //#include <USI_TWI_Master/USI_TWI_Master.h>
+}
+
+#include "USI_TWI_Master.h"
+#include "TinyWireM.h"
+
+
+// Initialize Class Variables //////////////////////////////////////////////////
+	uint8_t USI_TWI::USI_Buf[USI_BUF_SIZE];             // holds I2C send and receive data
+	uint8_t USI_TWI::USI_BufIdx = 0;                    // current number of bytes in the send buff
+	uint8_t USI_TWI::USI_LastRead = 0;                  // number of bytes read so far
+	uint8_t USI_TWI::USI_BytesAvail = 0;                // number of bytes requested but not read
+
+// Constructors ////////////////////////////////////////////////////////////////
+
+USI_TWI::USI_TWI(){
+}
+
+// Public Methods //////////////////////////////////////////////////////////////
+
+//int USI_TWI::peek(){}
+//void USI_TWI::flush(){}
+
+void USI_TWI::begin(){ // initialize I2C lib
+  USI_TWI_Master_Initialise();          
+}
+
+void USI_TWI::beginTransmission(uint8_t slaveAddr){ // setup address & write bit
+  USI_BufIdx = 0; 
+  USI_Buf[USI_BufIdx] = (slaveAddr<<TWI_ADR_BITS) | USI_SEND; 
+}
+
+size_t USI_TWI::write(uint8_t data){ // buffers up data to send
+  if (USI_BufIdx >= USI_BUF_SIZE) return 0;       // dont blow out the buffer
+  USI_BufIdx++;                                   // inc for next byte in buffer
+  USI_Buf[USI_BufIdx] = data;
+  return 1;
+}
+
+uint8_t USI_TWI::endTransmission() {
+  endTransmission(1);
+}
+
+uint8_t USI_TWI::endTransmission(uint8_t stop){ // actually sends the buffer
+  bool xferOK = false;
+  uint8_t errorCode = 0;
+  xferOK = USI_TWI_Start_Read_Write(USI_Buf,USI_BufIdx+1); // core func that does the work
+  USI_BufIdx = 0;
+  if (xferOK) {
+    if (stop) {
+      errorCode = USI_TWI_Master_Stop();
+      if (errorCode == 0) {
+        errorCode = USI_TWI_Get_State_Info();
+        return errorCode;
+      }
+    }
+    return 0;
+  }
+  else {                                  // there was an error
+    errorCode = USI_TWI_Get_State_Info(); // this function returns the error number
+    return errorCode;
+  }
+}
+
+uint8_t USI_TWI::requestFrom(uint8_t slaveAddr, uint8_t numBytes){ // setup for receiving from slave
+  bool xferOK = false;
+  uint8_t errorCode = 0;
+  USI_LastRead = 0;
+  USI_BytesAvail = numBytes; // save this off in a global
+  numBytes++;                // add extra byte to transmit header
+  USI_Buf[0] = (slaveAddr<<TWI_ADR_BITS) | USI_RCVE;   // setup address & Rcve bit
+  xferOK = USI_TWI_Start_Read_Write(USI_Buf,numBytes); // core func that does the work
+  // USI_Buf now holds the data read
+  if (xferOK) {
+    errorCode = USI_TWI_Master_Stop();
+    if (errorCode == 0) {
+      errorCode = USI_TWI_Get_State_Info();
+      return errorCode;
+    }
+    return 0;
+  }
+  else {                                  // there was an error
+    errorCode = USI_TWI_Get_State_Info(); // this function returns the error number
+    return errorCode;
+  }
+}
+
+int USI_TWI::read(){ // returns the bytes received one at a time
+  USI_LastRead++;     // inc first since first uint8_t read is in USI_Buf[1]
+  return USI_Buf[USI_LastRead];
+}
+
+int USI_TWI::available(){ // the bytes available that haven't been read yet
+  return USI_BytesAvail - (USI_LastRead); 
+}
+
+
+// Preinstantiate Objects //////////////////////////////////////////////////////
+
+USI_TWI Wire = USI_TWI();
+
+#endif
+
+#ifdef USE_SOFT_I2C
+
+#if (ARDUINO >= 100)
+#include <Arduino.h>
+#else
+#include <WProgram.h>
+#endif
+
+#include "SoftI2CMaster.h"
+
+#include <util/delay.h>
+#include <string.h>
+
+#define  i2cbitdelay 50
+
+#define  I2C_ACK  1 
+#define  I2C_NAK  0
+
+
+#define i2c_scl_release()                 \
+    *_sclDirReg     &=~ _sclBitMask
+#define i2c_sda_release()                 \
+    *_sdaDirReg     &=~ _sdaBitMask
+
+// sets SCL low and drives output
+#define i2c_scl_lo()                                 \
+                     *_sclPortReg  &=~ _sclBitMask;  \
+                     *_sclDirReg   |=  _sclBitMask; 
+
+// sets SDA low and drives output
+#define i2c_sda_lo()                                 \
+                     *_sdaPortReg  &=~ _sdaBitMask;  \
+                     *_sdaDirReg   |=  _sdaBitMask;  
+
+// set SCL high and to input (releases pin) (i.e. change to input,turnon pullup)
+#define i2c_scl_hi()                                 \
+                     *_sclDirReg   &=~ _sclBitMask;  \
+    if(usePullups) { *_sclPortReg  |=  _sclBitMask; } 
+
+// set SDA high and to input (releases pin) (i.e. change to input,turnon pullup)
+#define i2c_sda_hi()                                 \
+                     *_sdaDirReg   &=~ _sdaBitMask;  \
+    if(usePullups) { *_sdaPortReg  |=  _sdaBitMask; } 
+
+
+//
+// Constructor
+//
+SoftI2CMaster::SoftI2CMaster()
+{
+    // do nothing, use setPins() later
+}
+//
+SoftI2CMaster::SoftI2CMaster(uint8_t sclPin, uint8_t sdaPin) 
+{
+    setPins(sclPin, sdaPin, true);
+    i2c_init();
+}
+
+//
+SoftI2CMaster::SoftI2CMaster(uint8_t sclPin, uint8_t sdaPin, uint8_t pullups)
+{
+    setPins(sclPin, sdaPin, pullups);
+    i2c_init();
+}
+
+//
+// Turn Arduino pin numbers into PORTx, DDRx, and PINx
+//
+void SoftI2CMaster::setPins(uint8_t sclPin, uint8_t sdaPin, uint8_t pullups)
+{
+    uint8_t port;
+    
+    usePullups = pullups;
+
+    _sclPin = sclPin;
+    _sdaPin = sdaPin;
+    
+    _sclBitMask = digitalPinToBitMask(sclPin);
+    _sdaBitMask = digitalPinToBitMask(sdaPin);
+    
+    port = digitalPinToPort(sclPin);
+    _sclPortReg  = portOutputRegister(port);
+    _sclDirReg   = portModeRegister(port);
+
+    port = digitalPinToPort(sdaPin);
+    _sdaPortReg  = portOutputRegister(port);
+    _sdaDirReg   = portModeRegister(port);
+    
+}
+
+//
+//
+//
+uint8_t SoftI2CMaster::beginTransmission(uint8_t address)
+{
+    i2c_start();
+    uint8_t rc = i2c_write((address<<1) | 0); // clr read bit
+    return rc;
+}
+
+//
+uint8_t SoftI2CMaster::requestFrom(uint8_t address)
+{
+    i2c_start();
+    uint8_t rc = i2c_write((address<<1) | 1); // set read bit
+    return rc;
+}
+//
+uint8_t SoftI2CMaster::requestFrom(int address)
+{
+    return requestFrom( (uint8_t) address);
+}
+
+//
+uint8_t SoftI2CMaster::beginTransmission(int address)
+{
+    return beginTransmission((uint8_t)address);
+}
+
+//
+//
+//
+uint8_t SoftI2CMaster::endTransmission(void)
+{
+    i2c_stop();
+    //return ret;  // FIXME
+    return 0;
+}
+
+// must be called in:
+// slave tx event callback
+// or after beginTransmission(address)
+uint8_t SoftI2CMaster::write(uint8_t data)
+{
+    return i2c_write(data);
+}
+
+// must be called in:
+// slave tx event callback
+// or after beginTransmission(address)
+void SoftI2CMaster::write(uint8_t* data, uint8_t quantity)
+{
+    for(uint8_t i = 0; i < quantity; ++i){
+        write(data[i]);
+    }
+}
+
+// must be called in:
+// slave tx event callback
+// or after beginTransmission(address)
+void SoftI2CMaster::write(char* data)
+{
+    write((uint8_t*)data, strlen(data));
+}
+
+// must be called in:
+// slave tx event callback
+// or after beginTransmission(address)
+void SoftI2CMaster::write(int data)
+{
+    write((uint8_t)data);
+}
+
+//--------------------------------------------------------------------
+
+
+void SoftI2CMaster::i2c_writebit( uint8_t c )
+{
+    if ( c > 0 ) {
+        i2c_sda_hi();
+    } else {
+        i2c_sda_lo();
+    }
+
+    i2c_scl_hi();
+    _delay_us(i2cbitdelay);
+
+    i2c_scl_lo();
+    _delay_us(i2cbitdelay);
+
+    if ( c > 0 ) {
+        i2c_sda_lo();
+    }
+    _delay_us(i2cbitdelay);
+}
+
+//
+uint8_t SoftI2CMaster::i2c_readbit(void)
+{
+    i2c_sda_hi();
+    i2c_scl_hi();
+    _delay_us(i2cbitdelay);
+
+    uint8_t port = digitalPinToPort(_sdaPin);
+    volatile uint8_t* pinReg = portInputRegister(port);
+    uint8_t c = *pinReg;  // I2C_PIN;
+
+    i2c_scl_lo();
+    _delay_us(i2cbitdelay);
+
+    return ( c & _sdaBitMask) ? 1 : 0;
+}
+
+// Inits bitbanging port, must be called before using the functions below
+//
+void SoftI2CMaster::i2c_init(void)
+{
+    //I2C_PORT &=~ (_BV( I2C_SDA ) | _BV( I2C_SCL ));
+    //*_sclPortReg &=~ (_sdaBitMask | _sclBitMask);
+    i2c_sda_hi();
+    i2c_scl_hi();
+    
+    _delay_us(i2cbitdelay);
+}
+
+// Send a START Condition
+//
+void SoftI2CMaster::i2c_start(void)
+{
+    // set both to high at the same time
+    //I2C_DDR &=~ (_BV( I2C_SDA ) | _BV( I2C_SCL ));
+    //*_sclDirReg &=~ (_sdaBitMask | _sclBitMask);
+    i2c_sda_hi();
+    i2c_scl_hi();
+
+    _delay_us(i2cbitdelay);
+   
+    i2c_sda_lo();
+    _delay_us(i2cbitdelay);
+
+    i2c_scl_lo();
+    _delay_us(i2cbitdelay);
+}
+
+void SoftI2CMaster::i2c_repstart(void)
+{
+    // set both to high at the same time (releases drive on both lines)
+    //I2C_DDR &=~ (_BV( I2C_SDA ) | _BV( I2C_SCL ));
+    //*_sclDirReg &=~ (_sdaBitMask | _sclBitMask);
+    i2c_sda_hi();
+    i2c_scl_hi();
+
+    i2c_scl_lo();                           // force SCL low
+    _delay_us(i2cbitdelay);
+
+    i2c_sda_release();                      // release SDA
+    _delay_us(i2cbitdelay);
+
+    i2c_scl_release();                      // release SCL
+    _delay_us(i2cbitdelay);
+
+    i2c_sda_lo();                           // force SDA low
+    _delay_us(i2cbitdelay);
+}
+
+// Send a STOP Condition
+//
+void SoftI2CMaster::i2c_stop(void)
+{
+    i2c_scl_hi();
+    _delay_us(i2cbitdelay);
+
+    i2c_sda_hi();
+    _delay_us(i2cbitdelay);
+}
+
+// write a byte to the I2C slave device
+//
+uint8_t SoftI2CMaster::i2c_write( uint8_t c )
+{
+    for ( uint8_t i=0;i<8;i++) {
+        i2c_writebit( c & 128 );
+        c<<=1;
+    }
+
+    return i2c_readbit();
+}
+
+// read a byte from the I2C slave device
+//
+uint8_t SoftI2CMaster::i2c_read( uint8_t ack )
+{
+    uint8_t res = 0;
+
+    for ( uint8_t i=0;i<8;i++) {
+        res <<= 1;
+        res |= i2c_readbit();  
+    }
+
+    if ( ack )
+        i2c_writebit( 0 );
+    else
+        i2c_writebit( 1 );
+
+    _delay_us(i2cbitdelay);
+
+    return res;
+}
+
+// FIXME: this isn't right, surely
+uint8_t SoftI2CMaster::read( uint8_t ack )
+{
+  return i2c_read( ack );
+}
+
+//
+uint8_t SoftI2CMaster::read()
+{
+    return i2c_read( I2C_ACK );
+}
+
+//
+uint8_t SoftI2CMaster::readLast()
+{
+    return i2c_read( I2C_NAK );
+}
+
+
+#endif
+
+
+#ifdef USE_HARD_I2C
+
 extern "C" {
   #include <stdlib.h>
   #include <string.h>
@@ -327,3 +760,5 @@ void TwoWire::onRequest( void (*function)(void) )
 // Preinstantiate Objects //////////////////////////////////////////////////////
 
 TwoWire Wire = TwoWire();
+
+#endif
